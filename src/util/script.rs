@@ -4,6 +4,10 @@ use crate::elements::ebcompact::*;
 use elements::address as elements_address;
 
 use crate::chain::{script, Network, Script, TxIn, TxOut};
+#[cfg(not(feature = "liquid"))]
+use bitcoin::address::AddressData;
+#[cfg(not(feature = "liquid"))]
+use bitcoin::bech32;
 use script::Instruction::PushBytes;
 
 pub struct InnerScripts {
@@ -27,9 +31,25 @@ pub trait ScriptToAddr {
 #[cfg(not(feature = "liquid"))]
 impl ScriptToAddr for bitcoin::Script {
     fn to_address_str(&self, network: Network) -> Option<String> {
-        bitcoin::Address::from_script(self, bitcoin::Network::from(network))
-            .map(|s| s.to_string())
-            .ok()
+        let address = bitcoin::Address::from_script(self, bitcoin::Network::from(network)).ok()?;
+
+        if let AddressData::Segwit { witness_program } = address.to_address_data() {
+            let hrp_str = match network {
+                Network::Bitcoin => "fc",
+                Network::Testnet | Network::Testnet4 | Network::Signet => "tf",
+                Network::Regtest => "fcrt",
+                #[allow(unreachable_patterns)]
+                _ => "fc",
+            };
+
+            let hrp = bech32::Hrp::parse_unchecked(hrp_str);
+            let version = witness_program.version().to_fe();
+            let program = witness_program.program().as_ref();
+
+            bitcoin::bech32::segwit::encode(hrp, version, program).ok()
+        } else {
+            Some(address.to_string())
+        }
     }
 }
 #[cfg(feature = "liquid")]
