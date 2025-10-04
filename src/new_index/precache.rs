@@ -17,12 +17,15 @@ use std::io;
 use std::io::prelude::*;
 
 #[trace]
-pub fn precache(chain: &ChainQuery, scripthashes: Vec<FullHash>) {
+pub fn precache(chain: &ChainQuery, scripthashes: Vec<FullHash>, threads: usize) {
     let total = scripthashes.len();
-    info!("Pre-caching stats and utxo set for {} scripthashes", total);
+    info!(
+        "Pre-caching stats and utxo set on {} threads for {} scripthashes",
+        threads, total
+    );
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(16)
+        .num_threads(threads.max(1))
         .thread_name(|i| format!("precache-{}", i))
         .build()
         .unwrap();

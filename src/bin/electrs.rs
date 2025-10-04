@@ -91,7 +91,7 @@ fn run_server(config: Arc<Config>, salt_rwlock: Arc<RwLock<String>>) -> Result<(
     if let Some(ref precache_file) = config.precache_scripts {
         let precache_scripthashes = precache::scripthashes_from_file(precache_file.to_string())
             .expect("cannot load scripts to precache");
-        precache::precache(&chain, precache_scripthashes);
+        precache::precache(&chain, precache_scripthashes, config.precache_threads);
     }
 
     let mempool = Arc::new(RwLock::new(Mempool::new(
@@ -139,7 +139,7 @@ fn run_server(config: Arc<Config>, salt_rwlock: Arc<RwLock<String>>) -> Result<(
     loop {
         main_loop_count.inc();
 
-        if let Err(err) = signal.wait(Duration::from_secs(5), true) {
+        if let Err(err) = signal.wait(Duration::from_millis(config.main_loop_delay), true) {
             info!("stopping server: {}", err);
             rest_server.stop();
             // the electrum server is stopped when dropped
