@@ -14,7 +14,19 @@ use crate::errors::*;
 #[cfg(feature = "liquid")]
 use bitcoin::Network as BNetwork;
 
-const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const APP_NAME: &str = "flokicoin-electrs";
+pub(crate) const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const GIT_HASH: Option<&str> = option_env!("GIT_HASH");
+
+lazy_static! {
+    pub(crate) static ref VERSION_STRING: String = {
+        if let Some(hash) = GIT_HASH {
+            format!("{} {}-{}", APP_NAME, ELECTRS_VERSION, hash)
+        } else {
+            format!("{} {}", APP_NAME, ELECTRS_VERSION)
+        }
+    };
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -30,16 +42,27 @@ pub struct Config {
     pub electrum_rpc_addr: SocketAddr,
     pub http_addr: SocketAddr,
     pub http_socket_file: Option<PathBuf>,
+    pub rpc_socket_file: Option<PathBuf>,
     pub monitoring_addr: SocketAddr,
     pub jsonrpc_import: bool,
     pub light_mode: bool,
+    pub main_loop_delay: u64,
     pub address_search: bool,
     pub index_unspendables: bool,
     pub cors: Option<String>,
     pub precache_scripts: Option<String>,
+    pub precache_threads: usize,
     pub utxos_limit: usize,
     pub electrum_txs_limit: usize,
     pub electrum_banner: String,
+    pub mempool_backlog_stats_ttl: u64,
+    pub mempool_recent_txs_size: usize,
+    pub rest_default_block_limit: usize,
+    pub rest_default_chain_txs_per_page: usize,
+    pub rest_default_max_mempool_txs: usize,
+    pub rest_default_max_address_summary_txs: usize,
+    pub rest_max_mempool_page_size: usize,
+    pub rest_max_mempool_txid_page_size: usize,
     pub rpc_logging: RpcLogging,
     pub zmq_addr: Option<SocketAddr>,
 
@@ -177,6 +200,12 @@ impl Config {
                     .help("Enable light mode for reduced storage")
             )
             .arg(
+                Arg::with_name("main_loop_delay")
+                    .long("main-loop-delay")
+                    .help("The number of milliseconds the main loop will wait between loops. (Can be shortened with SIGUSR1)")
+                    .default_value("500")
+            )
+            .arg(
                 Arg::with_name("address_search")
                     .long("address-search")
                     .help("Enable prefix address search")
@@ -199,10 +228,64 @@ impl Config {
                     .takes_value(true)
             )
             .arg(
+                Arg::with_name("precache_threads")
+                    .long("precache-threads")
+                    .help("Non-zero number of threads to use for precache threadpool. [default: 4 * CORE_COUNT]")
+                    .takes_value(true)
+            )
+            .arg(
                 Arg::with_name("utxos_limit")
                     .long("utxos-limit")
                     .help("Maximum number of utxos to process per address. Lookups for addresses with more utxos will fail. Applies to the Electrum and HTTP APIs.")
                     .default_value("500")
+            )
+            .arg(
+                Arg::with_name("mempool_backlog_stats_ttl")
+                    .long("mempool-backlog-stats-ttl")
+                    .help("The number of seconds that need to pass before Mempool::update will update the latency histogram again.")
+                    .default_value("10")
+            )
+            .arg(
+                Arg::with_name("mempool_recent_txs_size")
+                    .long("mempool-recent-txs-size")
+                    .help("The number of transactions that mempool will keep in its recents queue. This is returned by mempool/recent endpoint.")
+                    .default_value("10")
+            )
+            .arg(
+                Arg::with_name("rest_default_block_limit")
+                    .long("rest-default-block-limit")
+                    .help("The default number of blocks returned from the blocks/[start_height] endpoint.")
+                    .default_value("10")
+            )
+            .arg(
+                Arg::with_name("rest_default_chain_txs_per_page")
+                    .long("rest-default-chain-txs-per-page")
+                    .help("The default number of on-chain transactions returned by the txs endpoints.")
+                    .default_value("25")
+            )
+            .arg(
+                Arg::with_name("rest_default_max_mempool_txs")
+                    .long("rest-default-max-mempool-txs")
+                    .help("The default number of mempool transactions returned by the txs endpoints.")
+                    .default_value("50")
+            )
+            .arg(
+                Arg::with_name("rest_default_max_address_summary_txs")
+                    .long("rest-default-max-address-summary-txs")
+                    .help("The default number of transactions returned by the address summary endpoints.")
+                    .default_value("5000")
+            )
+            .arg(
+                Arg::with_name("rest_max_mempool_page_size")
+                    .long("rest-max-mempool-page-size")
+                    .help("The maximum number of transactions returned by the paginated /internal/mempool/txs endpoint.")
+                    .default_value("1000")
+            )
+            .arg(
+                Arg::with_name("rest_max_mempool_txid_page_size")
+                    .long("rest-max-mempool-txid-page-size")
+                    .help("The maximum number of transactions returned by the paginated /mempool/txids/page endpoint.")
+                    .default_value("10000")
             )
             .arg(
                 Arg::with_name("electrum_txs_limit")
@@ -259,10 +342,17 @@ impl Config {
             );
 
         #[cfg(unix)]
-        let args = args.arg(
+        let args = args
+            .arg(
                 Arg::with_name("http_socket_file")
                     .long("http-socket-file")
                     .help("HTTP server 'unix socket file' to listen on (default disabled, enabling this disables the http server)")
+                    .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("rpc_socket_file")
+                    .long("rpc-socket-file")
+                    .help("Electrum RPC 'unix socket file' to listen on (default disabled, enabling this ignores the electrum_rpc_addr arg)")
                     .takes_value(true),
             );
 
@@ -413,6 +503,7 @@ impl Config {
             .map(|e| str_to_socketaddr(e, "ZMQ addr"));
 
         let http_socket_file: Option<PathBuf> = m.value_of("http_socket_file").map(PathBuf::from);
+        let rpc_socket_file: Option<PathBuf> = m.value_of("rpc_socket_file").map(PathBuf::from);
         let monitoring_addr: SocketAddr = str_to_socketaddr(
             m.value_of("monitoring_addr")
                 .unwrap_or(&format!("127.0.0.1:{}", default_monitoring_port)),
@@ -437,10 +528,41 @@ impl Config {
             .unwrap_or_else(|| daemon_dir.join("blocks"));
         let cookie = m.value_of("cookie").map(|s| s.to_owned());
 
-        let electrum_banner = m.value_of("electrum_banner").map_or_else(
-            || format!("Welcome to electrs-esplora {}", ELECTRS_VERSION),
-            |s| s.into(),
+        let main_loop_delay = value_t_or_exit!(m, "main_loop_delay", u64);
+
+        let precache_threads = m.value_of("precache_threads").map_or_else(
+            || {
+                std::thread::available_parallelism()
+                    .expect("Can't get core count")
+                    .get()
+                    * 4
+            },
+            |s| match s.parse::<usize>() {
+                Ok(v) if v > 0 => v,
+                _ => clap::Error::value_validation_auto(format!(
+                    "The argument '{}' isn't a valid value",
+                    s
+                ))
+                .exit(),
+            },
         );
+
+        let mempool_backlog_stats_ttl = value_t_or_exit!(m, "mempool_backlog_stats_ttl", u64);
+        let mempool_recent_txs_size = value_t_or_exit!(m, "mempool_recent_txs_size", usize);
+        let rest_default_block_limit = value_t_or_exit!(m, "rest_default_block_limit", usize);
+        let rest_default_chain_txs_per_page =
+            value_t_or_exit!(m, "rest_default_chain_txs_per_page", usize);
+        let rest_default_max_mempool_txs =
+            value_t_or_exit!(m, "rest_default_max_mempool_txs", usize);
+        let rest_default_max_address_summary_txs =
+            value_t_or_exit!(m, "rest_default_max_address_summary_txs", usize);
+        let rest_max_mempool_page_size = value_t_or_exit!(m, "rest_max_mempool_page_size", usize);
+        let rest_max_mempool_txid_page_size =
+            value_t_or_exit!(m, "rest_max_mempool_txid_page_size", usize);
+
+        let electrum_banner = m
+            .value_of("electrum_banner")
+            .map_or_else(|| format!("Welcome to {}", *VERSION_STRING), |s| s.into());
 
         #[cfg(feature = "electrum-discovery")]
         let electrum_public_hosts = m
@@ -469,6 +591,14 @@ impl Config {
             electrum_rpc_addr,
             electrum_txs_limit: value_t_or_exit!(m, "electrum_txs_limit", usize),
             electrum_banner,
+            mempool_backlog_stats_ttl,
+            mempool_recent_txs_size,
+            rest_default_block_limit,
+            rest_default_chain_txs_per_page,
+            rest_default_max_mempool_txs,
+            rest_default_max_address_summary_txs,
+            rest_max_mempool_page_size,
+            rest_max_mempool_txid_page_size,
             rpc_logging: {
                 let params = RpcLogging {
                     enabled: m.is_present("enable_json_rpc_logging"),
@@ -480,13 +610,16 @@ impl Config {
             },
             http_addr,
             http_socket_file,
+            rpc_socket_file,
             monitoring_addr,
             jsonrpc_import: m.is_present("jsonrpc_import"),
             light_mode: m.is_present("light_mode"),
+            main_loop_delay,
             address_search: m.is_present("address_search"),
             index_unspendables: m.is_present("index_unspendables"),
             cors: m.value_of("cors").map(|s| s.to_string()),
             precache_scripts: m.value_of("precache_scripts").map(|s| s.to_string()),
+            precache_threads,
             initial_sync_compaction: m.is_present("initial_sync_compaction"),
             db_block_cache_mb: value_t_or_exit!(m, "db_block_cache_mb", usize),
             db_parallelism: value_t_or_exit!(m, "db_parallelism", usize),
@@ -505,7 +638,6 @@ impl Config {
             #[cfg(feature = "electrum-discovery")]
             tor_proxy: m.value_of("tor_proxy").map(|s| s.parse().unwrap()),
         };
-        eprintln!("{:?}", config);
         config
     }
 

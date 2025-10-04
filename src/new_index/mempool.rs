@@ -1,4 +1,4 @@
-use arraydeque::{ArrayDeque, Wrapping};
+use bounded_vec_deque::BoundedVecDeque;
 use itertools::{Either, Itertools};
 
 #[cfg(not(feature = "liquid"))]
@@ -7,8 +7,9 @@ use electrs_macros::trace;
 #[cfg(feature = "liquid")]
 use elements::{encode::serialize, AssetId};
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::iter::FromIterator;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -27,17 +28,14 @@ use crate::util::{extract_tx_prevouts, full_hash, get_prev_outpoints, is_spendab
 #[cfg(feature = "liquid")]
 use crate::elements::asset;
 
-const RECENT_TXS_SIZE: usize = 10;
-const BACKLOG_STATS_TTL: u64 = 10;
-
 pub struct Mempool {
     chain: Arc<ChainQuery>,
     config: Arc<Config>,
-    txstore: HashMap<Txid, Transaction>,
+    txstore: BTreeMap<Txid, Transaction>,
     feeinfo: HashMap<Txid, TxFeeInfo>,
     history: HashMap<FullHash, Vec<TxHistoryInfo>>, // ScriptHash -> {history_entries}
     edges: HashMap<OutPoint, (Txid, u32)>,          // OutPoint -> (spending_txid, spending_vin)
-    recent: ArrayDeque<TxOverview, RECENT_TXS_SIZE, Wrapping>, // The N most recent txs to enter the mempool
+    recent: BoundedVecDeque<TxOverview>,            // The N most recent txs to enter the mempool
     backlog_stats: (BacklogStats, Instant),
 
     // monitoring
@@ -66,17 +64,19 @@ pub struct TxOverview {
 
 impl Mempool {
     pub fn new(chain: Arc<ChainQuery>, metrics: &Metrics, config: Arc<Config>) -> Self {
+        let recent_capacity = config.mempool_recent_txs_size;
+        let backlog_ttl = config.mempool_backlog_stats_ttl;
         Mempool {
             chain,
             config,
-            txstore: HashMap::new(),
+            txstore: BTreeMap::new(),
             feeinfo: HashMap::new(),
             history: HashMap::new(),
             edges: HashMap::new(),
-            recent: ArrayDeque::new(),
+            recent: BoundedVecDeque::new(recent_capacity.max(1)),
             backlog_stats: (
                 BacklogStats::default(),
-                Instant::now() - Duration::from_secs(BACKLOG_STATS_TTL),
+                Instant::now() - Duration::from_secs(backlog_ttl),
             ),
             latency: metrics.histogram_vec(
                 HistogramOpts::new("mempool_latency", "Mempool requests latency (in seconds)"),
@@ -147,6 +147,34 @@ impl Mempool {
     }
 
     #[trace]
+    pub fn history_group(
+        &self,
+        scripthashes: &[[u8; 32]],
+        last_seen_txid: Option<&Txid>,
+        limit: usize,
+    ) -> Vec<Transaction> {
+        let _timer = self
+            .latency
+            .with_label_values(&["history_group"])
+            .start_timer();
+        scripthashes
+            .iter()
+            .filter_map(|scripthash| self.history.get(&scripthash[..]))
+            .flat_map(|entries| entries.iter())
+            .map(|e| e.get_txid())
+            .unique()
+            .skip_while(|txid| last_seen_txid.map_or(false, |last| last != txid))
+            .skip(match last_seen_txid {
+                Some(_) => 1,
+                None => 0,
+            })
+            .take(limit)
+            .map(|txid| self.txstore.get(&txid).expect("missing mempool tx"))
+            .cloned()
+            .collect()
+    }
+
+    #[trace]
     fn _history(&self, entries: &[TxHistoryInfo], limit: usize) -> Vec<Transaction> {
         entries
             .iter()
@@ -173,6 +201,19 @@ impl Mempool {
                 .take(limit)
                 .collect(),
         }
+    }
+
+    #[trace]
+    pub fn history_txids_iter_group<'a>(
+        &'a self,
+        scripthashes: &'a [[u8; 32]],
+    ) -> impl Iterator<Item = Txid> + 'a {
+        scripthashes
+            .iter()
+            .filter_map(move |scripthash| self.history.get(&scripthash[..]))
+            .flat_map(|entries| entries.iter())
+            .map(|entry| entry.get_txid())
+            .unique()
     }
 
     #[trace]
@@ -276,6 +317,47 @@ impl Mempool {
     }
 
     #[trace]
+    // Get n txids after the given txid in the mempool
+    pub fn txids_page(&self, n: usize, start: Option<Txid>) -> Vec<&Txid> {
+        let _timer = self
+            .latency
+            .with_label_values(&["txids_page"])
+            .start_timer();
+        let start_bound = match start {
+            Some(txid) => Excluded(txid),
+            None => Unbounded,
+        };
+
+        self.txstore
+            .range((start_bound, Unbounded))
+            .take(n)
+            .map(|(txid, _)| txid)
+            .collect()
+    }
+
+    #[trace]
+    // Get n txs after the given txid in the mempool
+    pub fn txs_page(&self, n: usize, start: Option<Txid>) -> Vec<Transaction> {
+        let _timer = self.latency.with_label_values(&["txs_page"]).start_timer();
+        let start_bound = match start {
+            Some(txid) => Excluded(txid),
+            None => Unbounded,
+        };
+
+        self.txstore
+            .range((start_bound, Unbounded))
+            .take(n)
+            .map(|(_, tx)| tx.clone())
+            .collect()
+    }
+
+    #[trace]
+    pub fn txs(&self) -> Vec<Transaction> {
+        let _timer = self.latency.with_label_values(&["txs"]).start_timer();
+        self.txstore.values().cloned().collect()
+    }
+
+    #[trace]
     // Get an overview of the most recent transactions
     pub fn recent_txs_overview(&self) -> Vec<&TxOverview> {
         // We don't bother ever deleting elements from the recent list.
@@ -307,7 +389,7 @@ impl Mempool {
     pub fn add_by_txid(&mut self, daemon: &Daemon, txid: Txid) -> Result<()> {
         if self.txstore.get(&txid).is_none() {
             if let Ok(tx) = daemon.getmempooltx(&txid) {
-                let mut txs_map = HashMap::new();
+                let mut txs_map = BTreeMap::new();
                 txs_map.insert(txid, tx);
                 self.add(txs_map)
             } else {
@@ -319,7 +401,7 @@ impl Mempool {
     }
 
     #[trace]
-    fn add(&mut self, txs_map: HashMap<Txid, Transaction>) -> Result<()> {
+    fn add(&mut self, txs_map: BTreeMap<Txid, Transaction>) -> Result<()> {
         self.delta
             .with_label_values(&["add"])
             .observe(txs_map.len() as f64);
@@ -524,7 +606,7 @@ impl Mempool {
             .start_timer();
 
         // Continuously attempt to fetch mempool transactions until we're able to get them in full
-        let mut fetched_txs = HashMap::<Txid, Transaction>::new();
+        let mut fetched_txs = BTreeMap::<Txid, Transaction>::new();
         let mut indexed_txids = mempool.read().unwrap().txids_set();
         loop {
             // Get flokicoind's current list of mempool txids
@@ -613,7 +695,9 @@ impl Mempool {
                 .set(mempool.txstore.len() as f64);
 
             // Update cached backlog stats (if expired)
-            if mempool.backlog_stats.1.elapsed() > Duration::from_secs(BACKLOG_STATS_TTL) {
+            if mempool.backlog_stats.1.elapsed()
+                > Duration::from_secs(mempool.config.mempool_backlog_stats_ttl)
+            {
                 mempool.update_backlog_stats();
             }
         }

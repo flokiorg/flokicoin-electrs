@@ -2,7 +2,7 @@ use crate::chain::{
     address, BlockHash, Network, OutPoint, Script, Sequence, Transaction, TxIn, TxMerkleNode,
     TxOut, Txid,
 };
-use crate::config::Config;
+use crate::config::{Config, VERSION_STRING};
 use crate::errors;
 use crate::new_index::{compute_script_hash, Query, SpendingInput, Utxo};
 #[cfg(not(feature = "liquid"))]
@@ -44,10 +44,9 @@ use std::sync::Arc;
 use std::thread;
 use url::form_urlencoded;
 
-const CHAIN_TXS_PER_PAGE: usize = 25;
-const MAX_MEMPOOL_TXS: usize = 50;
-const BLOCK_LIMIT: usize = 10;
 const ADDRESS_SEARCH_LIMIT: usize = 10;
+#[allow(dead_code)]
+const MULTI_ADDRESS_LIMIT: usize = 300;
 
 #[cfg(feature = "liquid")]
 const ASSETS_PER_PAGE: usize = 25;
@@ -60,6 +59,27 @@ const TTL_LONG: u32 = 157_784_630; // ttl for static resources (5 years)
 const TTL_SHORT: u32 = 10; // ttl for volatie resources
 const TTL_MEMPOOL_RECENT: u32 = 5; // ttl for GET /mempool/recent
 const CONF_FINAL: usize = 10; // reorgs deeper than this are considered unlikely
+
+#[allow(dead_code)]
+const INTERNAL_PREFIX: &str = "internal";
+
+#[allow(dead_code)]
+enum TxidLocation {
+    Mempool,
+    Chain(u32),
+    None,
+}
+
+#[allow(dead_code)]
+fn find_txid(txid: &Txid, query: &Query) -> TxidLocation {
+    if query.mempool().lookup_txn(txid).is_some() {
+        TxidLocation::Mempool
+    } else if let Some(block) = query.chain().tx_confirming_block(txid) {
+        TxidLocation::Chain(block.height as u32)
+    } else {
+        TxidLocation::None
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct BlockValue {
@@ -648,7 +668,7 @@ fn handle_request(
 
         (&Method::GET, Some(&"blocks"), start_height, None, None, None) => {
             let start_height = start_height.and_then(|height| height.parse::<usize>().ok());
-            blocks(&query, start_height)
+            blocks(config, &query, start_height)
         }
         (&Method::GET, Some(&"block-height"), Some(height), None, None, None) => {
             let height = height.parse::<usize>()?;
@@ -681,6 +701,28 @@ fn handle_request(
                 .get_block_txids(&hash)
                 .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
             json_response(txids, TTL_LONG)
+        }
+        (&Method::GET, Some(&INTERNAL_PREFIX), Some(&"block"), Some(hash), Some(&"txs"), None) => {
+            let hash = BlockHash::from_str(hash)?;
+            let block_id = query.chain().blockid_by_hash(&hash);
+            let txids = query
+                .chain()
+                .get_block_txids(&hash)
+                .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
+
+            let txs = txids
+                .into_iter()
+                .filter_map(|txid| {
+                    query
+                        .chain()
+                        .lookup_txn(&txid, Some(&hash))
+                        .or_else(|| query.lookup_txn(&txid))
+                        .map(|tx| (tx, block_id.clone()))
+                })
+                .collect::<Vec<_>>();
+
+            let ttl = ttl_by_depth(block_id.map(|b| b.height), query);
+            json_response(prepare_txs(txs, query, config), ttl)
         }
         (&Method::GET, Some(&"block"), Some(hash), Some(&"header"), None, None) => {
             let hash = BlockHash::from_str(hash)?;
@@ -730,10 +772,10 @@ fn handle_request(
                 .max(0u32) as usize;
             if start_index >= txids.len() {
                 bail!(HttpError::not_found("start index out of range".to_string()));
-            } else if start_index % CHAIN_TXS_PER_PAGE != 0 {
+            } else if start_index % config.rest_default_chain_txs_per_page != 0 {
                 bail!(HttpError::from(format!(
                     "start index must be a multipication of {}",
-                    CHAIN_TXS_PER_PAGE
+                    config.rest_default_chain_txs_per_page
                 )));
             }
 
@@ -744,7 +786,7 @@ fn handle_request(
             let txs = txids
                 .iter()
                 .skip(start_index)
-                .take(CHAIN_TXS_PER_PAGE)
+                .take(config.rest_default_chain_txs_per_page)
                 .map(|txid| {
                     query
                         .lookup_txn(&txid)
@@ -794,7 +836,7 @@ fn handle_request(
             txs.extend(
                 query
                     .mempool()
-                    .history(&script_hash[..], MAX_MEMPOOL_TXS)
+                    .history(&script_hash[..], config.rest_default_max_mempool_txs)
                     .into_iter()
                     .map(|tx| (tx, None)),
             );
@@ -802,7 +844,11 @@ fn handle_request(
             txs.extend(
                 query
                     .chain()
-                    .history(&script_hash[..], None, CHAIN_TXS_PER_PAGE)
+                    .history(
+                        &script_hash[..],
+                        None,
+                        config.rest_default_chain_txs_per_page,
+                    )
                     .into_iter()
                     .map(|(tx, blockid)| (tx, Some(blockid))),
             );
@@ -834,7 +880,7 @@ fn handle_request(
                 .history(
                     &script_hash[..],
                     last_seen_txid.as_ref(),
-                    CHAIN_TXS_PER_PAGE,
+                    config.rest_default_chain_txs_per_page,
                 )
                 .into_iter()
                 .map(|(tx, blockid)| (tx, Some(blockid)))
@@ -862,7 +908,7 @@ fn handle_request(
 
             let txs = query
                 .mempool()
-                .history(&script_hash[..], MAX_MEMPOOL_TXS)
+                .history(&script_hash[..], config.rest_default_max_mempool_txs)
                 .into_iter()
                 .map(|tx| (tx, None))
                 .collect();
@@ -941,6 +987,29 @@ fn handle_request(
             let ttl = ttl_by_depth(status.block_height, query);
             json_response(status, ttl)
         }
+        (&Method::POST, Some(&INTERNAL_PREFIX), Some(&"txs"), None, None, None) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            match txid_strings
+                .into_iter()
+                .map(|txid| Txid::from_str(&txid))
+                .collect::<Result<Vec<Txid>, _>>()
+            {
+                Ok(txids) => {
+                    let txs: Vec<(Transaction, Option<BlockId>)> = txids
+                        .iter()
+                        .filter_map(|txid| {
+                            query
+                                .lookup_txn(txid)
+                                .map(|tx| (tx, query.chain().tx_confirming_block(txid)))
+                        })
+                        .collect();
+                    json_response(prepare_txs(txs, query, config), 0)
+                }
+                Err(err) => http_message(StatusCode::BAD_REQUEST, err.to_string(), 0),
+            }
+        }
 
         (&Method::GET, Some(&"tx"), Some(hash), Some(&"merkle-proof"), None, None) => {
             let hash = Txid::from_str(hash)?;
@@ -1005,6 +1074,69 @@ fn handle_request(
             // @TODO long ttl if all outputs are either spent long ago or unspendable
             json_response(spends, TTL_SHORT)
         }
+        (
+            &Method::POST,
+            Some(&INTERNAL_PREFIX),
+            Some(&"txs"),
+            Some(&"outspends"),
+            Some(&"by-txid"),
+            None,
+        ) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            let spends: Vec<Vec<SpendingValue>> = txid_strings
+                .into_iter()
+                .map(|txid_str| {
+                    Txid::from_str(&txid_str)
+                        .ok()
+                        .and_then(|txid| query.lookup_txn(&txid))
+                        .map_or_else(Vec::new, |tx| {
+                            query
+                                .lookup_tx_spends(tx)
+                                .into_iter()
+                                .map(|spend| {
+                                    spend.map_or_else(SpendingValue::default, SpendingValue::from)
+                                })
+                                .collect()
+                        })
+                })
+                .collect();
+
+            json_response(spends, TTL_SHORT)
+        }
+        (
+            &Method::POST,
+            Some(&INTERNAL_PREFIX),
+            Some(&"txs"),
+            Some(&"outspends"),
+            Some(&"by-outpoint"),
+            None,
+        ) => {
+            let outpoint_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            let spends: Vec<SpendingValue> = outpoint_strings
+                .into_iter()
+                .map(|outpoint_str| {
+                    let mut parts = outpoint_str.split(':');
+                    let hash_part = parts.next();
+                    let index_part = parts.next();
+
+                    if let (Some(hash), Some(index)) = (hash_part, index_part) {
+                        if let (Ok(txid), Ok(vout)) = (Txid::from_str(hash), index.parse::<u32>()) {
+                            let outpoint = OutPoint { txid, vout };
+                            return query
+                                .lookup_spend(&outpoint)
+                                .map_or_else(SpendingValue::default, SpendingValue::from);
+                        }
+                    }
+                    SpendingValue::default()
+                })
+                .collect();
+
+            json_response(spends, TTL_SHORT)
+        }
         (&Method::GET, Some(&"broadcast"), None, None, None, None)
         | (&Method::POST, Some(&"tx"), None, None, None, None) => {
             // accept both POST and GET for backward compatibility.
@@ -1019,6 +1151,44 @@ fn handle_request(
             };
             let txid = query.broadcast_raw(&txhex)?;
             http_message(StatusCode::OK, txid.to_string(), 0)
+        }
+        (&Method::POST, Some(&"txs"), Some(&"test"), None, None, None) => {
+            let txhexes: Vec<String> =
+                serde_json::from_str(String::from_utf8(body.to_vec())?.as_str())?;
+
+            if txhexes.len() > 25 {
+                Result::Err(HttpError::from(
+                    "Exceeded maximum of 25 transactions".to_string(),
+                ))?
+            }
+
+            let maxfeerate = query_params
+                .get("maxfeerate")
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|_| HttpError::from("Invalid maxfeerate".to_string()))
+                })
+                .transpose()?;
+
+            // pre-checks
+            txhexes.iter().enumerate().try_for_each(|(index, txhex)| {
+                if !(120..800_000).contains(&txhex.len()) {
+                    Result::Err(HttpError::from(format!(
+                        "Invalid transaction size for item {}",
+                        index
+                    )))
+                } else {
+                    Vec::<u8>::from_hex(txhex).map(|_| ()).map_err(|_| {
+                        HttpError::from(format!("Invalid transaction hex for item {}", index))
+                    })
+                }
+            })?;
+
+            let result = query
+                .test_mempool_accept(txhexes, maxfeerate)
+                .map_err(|err| HttpError::from(err.description().to_string()))?;
+
+            json_response(result, TTL_SHORT)
         }
         (&Method::POST, Some(&"txs"), Some(&"package"), None, None, None) => {
             let txhexes: Vec<String> =
@@ -1084,6 +1254,86 @@ fn handle_request(
         (&Method::GET, Some(&"mempool"), Some(&"txids"), None, None, None) => {
             json_response(query.mempool().txids(), TTL_SHORT)
         }
+        (&Method::GET, Some(&"mempool"), Some(&"txids"), Some(&"page"), last_seen_txid, None) => {
+            let last_seen_txid = last_seen_txid.and_then(|txid| Txid::from_str(txid).ok());
+            let max_txs = query_params
+                .get("max_txs")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(config.rest_max_mempool_txid_page_size);
+            let page = {
+                let mempool = query.mempool();
+                mempool
+                    .txids_page(max_txs, last_seen_txid)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            json_response(page, TTL_SHORT)
+        }
+        (
+            &Method::GET,
+            Some(&INTERNAL_PREFIX),
+            Some(&"mempool"),
+            Some(&"txs"),
+            Some(&"all"),
+            None,
+        ) => {
+            let txs = {
+                let mempool = query.mempool();
+                mempool
+                    .txs()
+                    .into_iter()
+                    .map(|tx| (tx, None))
+                    .collect::<Vec<_>>()
+            };
+            json_response(prepare_txs(txs, query, config), TTL_SHORT)
+        }
+        (&Method::POST, Some(&INTERNAL_PREFIX), Some(&"mempool"), Some(&"txs"), None, None) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            match txid_strings
+                .into_iter()
+                .map(|txid| Txid::from_str(&txid))
+                .collect::<Result<Vec<Txid>, _>>()
+            {
+                Ok(txids) => {
+                    let txs = {
+                        let mempool = query.mempool();
+                        txids
+                            .iter()
+                            .filter_map(|txid| mempool.lookup_txn(txid).map(|tx| (tx, None)))
+                            .collect::<Vec<_>>()
+                    };
+                    json_response(prepare_txs(txs, query, config), 0)
+                }
+                Err(err) => http_message(StatusCode::BAD_REQUEST, err.to_string(), 0),
+            }
+        }
+        (
+            &Method::GET,
+            Some(&INTERNAL_PREFIX),
+            Some(&"mempool"),
+            Some(&"txs"),
+            last_seen_txid,
+            None,
+        ) => {
+            let last_seen_txid = last_seen_txid.and_then(|txid| Txid::from_str(txid).ok());
+            let max_txs = query_params
+                .get("max_txs")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(config.rest_max_mempool_page_size);
+            let txs = {
+                let mempool = query.mempool();
+                mempool
+                    .txs_page(max_txs, last_seen_txid)
+                    .into_iter()
+                    .map(|tx| (tx, None))
+                    .collect::<Vec<_>>()
+            };
+
+            json_response(prepare_txs(txs, query, config), TTL_SHORT)
+        }
         (&Method::GET, Some(&"mempool"), Some(&"recent"), None, None, None) => {
             let mempool = query.mempool();
             let recent = mempool.recent_txs_overview();
@@ -1139,7 +1389,7 @@ fn handle_request(
             txs.extend(
                 query
                     .mempool()
-                    .asset_history(&asset_id, MAX_MEMPOOL_TXS)
+                    .asset_history(&asset_id, config.rest_default_max_mempool_txs)
                     .into_iter()
                     .map(|tx| (tx, None)),
             );
@@ -1147,7 +1397,7 @@ fn handle_request(
             txs.extend(
                 query
                     .chain()
-                    .asset_history(&asset_id, None, CHAIN_TXS_PER_PAGE)
+                    .asset_history(&asset_id, None, config.rest_default_chain_txs_per_page)
                     .into_iter()
                     .map(|(tx, blockid)| (tx, Some(blockid))),
             );
@@ -1169,7 +1419,11 @@ fn handle_request(
 
             let txs = query
                 .chain()
-                .asset_history(&asset_id, last_seen_txid.as_ref(), CHAIN_TXS_PER_PAGE)
+                .asset_history(
+                    &asset_id,
+                    last_seen_txid.as_ref(),
+                    config.rest_default_chain_txs_per_page,
+                )
                 .into_iter()
                 .map(|(tx, blockid)| (tx, Some(blockid)))
                 .collect();
@@ -1183,7 +1437,7 @@ fn handle_request(
 
             let txs = query
                 .mempool()
-                .asset_history(&asset_id, MAX_MEMPOOL_TXS)
+                .asset_history(&asset_id, config.rest_default_max_mempool_txs)
                 .into_iter()
                 .map(|tx| (tx, None))
                 .collect();
@@ -1226,6 +1480,7 @@ where
         .status(status)
         .header("Content-Type", "text/plain")
         .header("Cache-Control", format!("public, max-age={:}", ttl))
+        .header("X-Powered-By", &**VERSION_STRING)
         .body(message.into())
         .unwrap())
 }
@@ -1235,12 +1490,17 @@ fn json_response<T: Serialize>(value: T, ttl: u32) -> Result<Response<Body>, Htt
     Ok(Response::builder()
         .header("Content-Type", "application/json")
         .header("Cache-Control", format!("public, max-age={:}", ttl))
+        .header("X-Powered-By", &**VERSION_STRING)
         .body(Body::from(value))
         .unwrap())
 }
 
 #[trace]
-fn blocks(query: &Query, start_height: Option<usize>) -> Result<Response<Body>, HttpError> {
+fn blocks(
+    config: &Config,
+    query: &Query,
+    start_height: Option<usize>,
+) -> Result<Response<Body>, HttpError> {
     let mut values = Vec::new();
     let mut current_hash = match start_height {
         Some(height) => *query
@@ -1252,7 +1512,7 @@ fn blocks(query: &Query, start_height: Option<usize>) -> Result<Response<Body>, 
     };
 
     let zero = [0u8; 32];
-    for _ in 0..BLOCK_LIMIT {
+    for _ in 0..config.rest_default_block_limit {
         let blockhm = query
             .chain()
             .get_block_with_meta(&current_hash)

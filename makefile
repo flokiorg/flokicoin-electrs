@@ -2,6 +2,7 @@
 dev: 
 	cargo build --locked
 	./target/debug/electrs -vvv \
+		--address-search \
 		--network mainnet \
 		--db-dir ./tests/db \
 		--jsonrpc-import \
