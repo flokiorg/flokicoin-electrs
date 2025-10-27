@@ -16,6 +16,8 @@ use crate::util::{
 };
 #[cfg(not(feature = "liquid"))]
 use bitcoin::consensus::encode;
+#[cfg(not(feature = "liquid"))]
+use bitcoin::Network as BNetwork;
 
 use bitcoin::hashes::FromSliceError as HashError;
 use bitcoin::hex::{self, DisplayHex, FromHex, HexToBytesIter};
@@ -108,7 +110,7 @@ struct BlockValue {
 
 impl BlockValue {
     #[cfg_attr(feature = "liquid", allow(unused_variables))]
-    fn new(blockhm: BlockHeaderMeta) -> Self {
+    fn new(blockhm: BlockHeaderMeta, config: &Config) -> Self {
         let header = blockhm.header_entry.header();
         BlockValue {
             id: header.block_hash(),
@@ -685,7 +687,7 @@ fn handle_request(
                 .chain()
                 .get_block_with_meta(&hash)
                 .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
-            let block_value = BlockValue::new(blockhm);
+            let block_value = BlockValue::new(blockhm, config);
             json_response(block_value, TTL_LONG)
         }
         (&Method::GET, Some(&"block"), Some(hash), Some(&"status"), None, None) => {
@@ -1520,7 +1522,7 @@ fn blocks(
         current_hash = blockhm.header_entry.header().prev_blockhash;
 
         #[allow(unused_mut)]
-        let mut value = BlockValue::new(blockhm);
+        let mut value = BlockValue::new(blockhm, config);
 
         #[cfg(feature = "liquid")]
         {
