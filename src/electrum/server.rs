@@ -73,25 +73,25 @@ fn bool_from_value_or(val: Option<&Value>, name: &str, default: bool) -> Result<
     bool_from_value(val, name)
 }
 
-fn script_pubkey_type(script: &Script) -> &'static str {
+fn script_pubkey_meta(script: &Script) -> (&'static str, Option<u32>) {
     if script.is_empty() {
-        "empty"
+        ("nonstandard", None)
     } else if script.is_op_return() {
-        "op_return"
+        ("nulldata", None)
     } else if script.is_p2pk() {
-        "p2pk"
+        ("pubkey", Some(1))
     } else if script.is_p2pkh() {
-        "p2pkh"
+        ("pubkeyhash", Some(1))
     } else if script.is_p2sh() {
-        "p2sh"
+        ("scripthash", Some(1))
     } else if script.is_p2wpkh() {
-        "v0_p2wpkh"
+        ("witness_v0_keyhash", Some(1))
     } else if script.is_p2wsh() {
-        "v0_p2wsh"
+        ("witness_v0_scripthash", Some(1))
     } else if script.is_p2tr() {
-        "v1_p2tr"
+        ("witness_v1_taproot", Some(1))
     } else {
-        "unknown"
+        ("nonstandard", None)
     }
 }
 
@@ -141,19 +141,21 @@ fn verbose_vin(txin: &TxIn) -> Value {
 
 fn verbose_vout(txout: &TxOut, index: usize, config: &Config) -> Value {
     let script = &txout.script_pubkey;
+    let (spk_type, req_sigs) = script_pubkey_meta(script);
     let mut spk = serde_json::Map::new();
     spk.insert("asm".to_string(), serde_json::json!(script.to_asm()));
     spk.insert(
         "hex".to_string(),
         serde_json::json!(script.as_bytes().to_lower_hex_string()),
     );
-    spk.insert(
-        "type".to_string(),
-        serde_json::json!(script_pubkey_type(script)),
-    );
+    spk.insert("type".to_string(), serde_json::json!(spk_type));
 
     if let Some(addr) = script.to_address_str(config.network_type) {
         spk.insert("addresses".to_string(), serde_json::json!([addr]));
+        spk.insert("address".to_string(), serde_json::json!(addr));
+    }
+    if let Some(req) = req_sigs {
+        spk.insert("reqSigs".to_string(), serde_json::json!(req));
     }
 
     let mut vout = serde_json::Map::new();
@@ -223,7 +225,6 @@ fn build_verbose_transaction(
         "vout": vout,
         "hex": raw_hex,
         "blockhash": blockid.as_ref().map(|b| b.hash),
-        "blockheight": blockid.as_ref().map(|b| b.height),
         "time": blockid.as_ref().map(|b| b.time),
         "blocktime": blockid.as_ref().map(|b| b.time),
         "confirmations": confirmations,
