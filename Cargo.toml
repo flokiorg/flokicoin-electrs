@@ -13,6 +13,9 @@ readme = "README.md"
 edition = "2018"
 default-run = "electrs"
 
+[lib]
+name = "electrs"
+
 [features]
 liquid = ["elements"]
 electrum-discovery = ["electrum-client"]
