@@ -15,14 +15,17 @@ use serde_json::{from_str, Value};
 
 use electrs_macros::trace;
 
-use crate::chain::Txid;
+use crate::chain::{deserialize, Script, Transaction, TxIn, TxOut, Txid};
 use crate::config::{Config, RpcLogging};
 use crate::electrum::{get_electrum_height, ProtocolVersion};
 use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::new_index::{Query, Utxo};
 use crate::util::electrum_merkle::{get_header_merkle_proof, get_id_from_pos, get_tx_merkle_proof};
-use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry};
+use crate::util::{
+    create_socket, is_coinbase, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry,
+    ScriptToAddr, ScriptToAsm,
+};
 #[cfg(not(feature = "liquid"))]
 use bitcoin::consensus::encode::serialize_hex;
 #[cfg(feature = "liquid")]
@@ -68,6 +71,163 @@ fn bool_from_value_or(val: Option<&Value>, name: &str, default: bool) -> Result<
         return Ok(default);
     }
     bool_from_value(val, name)
+}
+
+fn script_pubkey_type(script: &Script) -> &'static str {
+    if script.is_empty() {
+        "empty"
+    } else if script.is_op_return() {
+        "op_return"
+    } else if script.is_p2pk() {
+        "p2pk"
+    } else if script.is_p2pkh() {
+        "p2pkh"
+    } else if script.is_p2sh() {
+        "p2sh"
+    } else if script.is_p2wpkh() {
+        "v0_p2wpkh"
+    } else if script.is_p2wsh() {
+        "v0_p2wsh"
+    } else if script.is_p2tr() {
+        "v1_p2tr"
+    } else {
+        "unknown"
+    }
+}
+
+fn verbose_vin(txin: &TxIn) -> Value {
+    let mut vin = serde_json::Map::new();
+    let script_hex = txin.script_sig.as_bytes().to_lower_hex_string();
+
+    if is_coinbase(txin) {
+        vin.insert("coinbase".to_string(), serde_json::json!(script_hex));
+    } else {
+        vin.insert(
+            "txid".to_string(),
+            serde_json::json!(txin.previous_output.txid),
+        );
+        vin.insert(
+            "vout".to_string(),
+            serde_json::json!(txin.previous_output.vout),
+        );
+        vin.insert(
+            "scriptSig".to_string(),
+            serde_json::json!({
+                "asm": txin.script_sig.to_asm(),
+                "hex": script_hex,
+            }),
+        );
+
+        let witness = {
+            let witness = &txin.witness;
+            #[cfg(feature = "liquid")]
+            let witness = &witness.script_witness;
+
+            witness
+                .iter()
+                .map(DisplayHex::to_lower_hex_string)
+                .collect::<Vec<_>>()
+        };
+
+        if !witness.is_empty() {
+            vin.insert("txinwitness".to_string(), serde_json::json!(witness));
+        }
+    }
+
+    vin.insert("sequence".to_string(), serde_json::json!(txin.sequence));
+
+    Value::Object(vin)
+}
+
+fn verbose_vout(txout: &TxOut, index: usize, config: &Config) -> Value {
+    let script = &txout.script_pubkey;
+    let mut spk = serde_json::Map::new();
+    spk.insert("asm".to_string(), serde_json::json!(script.to_asm()));
+    spk.insert(
+        "hex".to_string(),
+        serde_json::json!(script.as_bytes().to_lower_hex_string()),
+    );
+    spk.insert(
+        "type".to_string(),
+        serde_json::json!(script_pubkey_type(script)),
+    );
+
+    if let Some(addr) = script.to_address_str(config.network_type) {
+        spk.insert("addresses".to_string(), serde_json::json!([addr]));
+    }
+
+    let mut vout = serde_json::Map::new();
+    #[cfg(not(feature = "liquid"))]
+    {
+        let value_btc = txout.value.to_sat() as f64 / 100_000_000.0;
+        vout.insert("value".to_string(), serde_json::json!(value_btc));
+    }
+    #[cfg(feature = "liquid")]
+    {
+        if let Some(value) = txout.value.explicit() {
+            let value_btc = value as f64 / 100_000_000.0;
+            vout.insert("value".to_string(), serde_json::json!(value_btc));
+        }
+    }
+    vout.insert("n".to_string(), serde_json::json!(index));
+    vout.insert("scriptPubKey".to_string(), Value::Object(spk));
+
+    Value::Object(vout)
+}
+
+fn build_verbose_transaction(
+    query: &Query,
+    tx: &Transaction,
+    raw_hex: String,
+    blockid: Option<BlockId>,
+) -> Value {
+    let weight = {
+        let w = tx.weight();
+        #[cfg(not(feature = "liquid"))]
+        let w = w.to_wu() as u64;
+        #[cfg(feature = "liquid")]
+        let w = w as u64;
+        w
+    };
+    let vsize = (weight + 3) / 4;
+    let confirmations = blockid
+        .as_ref()
+        .map(|b| (query.chain().best_height().saturating_sub(b.height) + 1) as u64)
+        .unwrap_or(0);
+
+    let vin = tx.input.iter().map(verbose_vin).collect::<Vec<_>>();
+    let vout = tx
+        .output
+        .iter()
+        .enumerate()
+        .map(|(i, txout)| verbose_vout(txout, i, query.config()))
+        .collect::<Vec<_>>();
+
+    let version = {
+        #[cfg(not(feature = "liquid"))]
+        let v = tx.version.0 as u32;
+        #[cfg(feature = "liquid")]
+        let v = tx.version as u32;
+        v
+    };
+
+    serde_json::json!({
+        "txid": tx.compute_txid(),
+        "hash": tx.compute_wtxid(),
+        "version": version,
+        "size": tx.total_size() as u32,
+        "vsize": vsize as u32,
+        "weight": weight,
+        "locktime": tx.lock_time.to_consensus_u32(),
+        "vin": vin,
+        "vout": vout,
+        "hex": raw_hex,
+        "blockhash": blockid.as_ref().map(|b| b.hash),
+        "blockheight": blockid.as_ref().map(|b| b.height),
+        "time": blockid.as_ref().map(|b| b.time),
+        "blocktime": blockid.as_ref().map(|b| b.time),
+        "confirmations": confirmations,
+    })
 }
 
 // TODO: implement caching and delta updates
@@ -383,16 +543,25 @@ impl Connection {
             None => false,
         };
 
-        // FIXME: implement verbose support
-        if verbose {
-            bail!("verbose transactions are currently unsupported");
-        }
-
         let rawtx = self
             .query
             .lookup_raw_txn(&tx_hash)
             .chain_err(|| "missing transaction")?;
-        Ok(json!(rawtx.to_lower_hex_string()))
+        let raw_hex = rawtx.to_lower_hex_string();
+
+        if verbose {
+            let tx: Transaction =
+                deserialize(&rawtx).chain_err(|| "failed to parse transaction")?;
+            let blockid = self.query.chain().tx_confirming_block(&tx_hash);
+            return Ok(build_verbose_transaction(
+                &self.query,
+                &tx,
+                raw_hex,
+                blockid,
+            ));
+        }
+
+        Ok(json!(raw_hex))
     }
 
     #[trace]
