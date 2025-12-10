@@ -31,7 +31,7 @@ use electrs::{
 
 pub struct TestRunner {
     config: Arc<Config>,
-    /// Wrapper for the Flokicoind daemon or an elementsd::ElementsD in liquid mode
+    /// Wrapper for the Lokid daemon or an elementsd::ElementsD in liquid mode
     node: NodeD,
     _electrsdb: TempDir, // rm'd when dropped
     indexer: Indexer,
@@ -46,7 +46,7 @@ impl TestRunner {
     pub fn new() -> Result<TestRunner> {
         let log = init_log();
 
-        // Setup the flokicoind/elementsd config
+        // Setup the lokid/elementsd config
         let mut node_conf = noded::Conf::default();
         {
             #[cfg(not(feature = "liquid"))]
@@ -357,8 +357,8 @@ error_chain::error_chain! {
         }
 
         BitcoindRpc(e: bitcoind::bitcoincore_rpc::Error) {
-            description("Flokicoind RPC error")
-            display("Flokicoind RPC error: {:?}", e)
+            description("Lokid RPC error")
+            display("Lokid RPC error: {:?}", e)
         }
 
         ElectrumD(e: electrumd::Error) {

@@ -421,11 +421,11 @@ impl Daemon {
                     .unwrap(),
             ),
             latency: metrics.histogram_vec(
-                HistogramOpts::new("daemon_rpc", "Flokicoind RPC latency (in seconds)"),
+                HistogramOpts::new("daemon_rpc", "Lokid RPC latency (in seconds)"),
                 &["method"],
             ),
             size: metrics.histogram_vec(
-                HistogramOpts::new("daemon_bytes", "Flokicoind RPC size (in bytes)"),
+                HistogramOpts::new("daemon_bytes", "Lokid RPC size (in bytes)"),
                 &["method", "dir"],
             ),
         };
@@ -433,14 +433,14 @@ impl Daemon {
         info!("{:?}", network_info);
         if network_info.version < 16_00_00 {
             bail!(
-                "{} is not supported - please use Flokicoind 0.16+",
+                "{} is not supported - please use Lokid 0.16+",
                 network_info.subversion,
             )
         }
         let blockchain_info = daemon.getblockchaininfo()?;
         info!("{:?}", blockchain_info);
         if blockchain_info.pruned {
-            bail!("pruned node is not supported (use '-prune=0' Flokicoind flag)".to_owned())
+            bail!("pruned node is not supported (use '-prune=0' Lokid flag)".to_owned())
         }
         loop {
             let info = daemon.getblockchaininfo()?;
@@ -450,7 +450,7 @@ impl Daemon {
             }
 
             warn!(
-                "waiting for Flokicoind sync to finish: {}/{} blocks, verification progress: {:.3}%",
+                "waiting for Lokid sync to finish: {}/{} blocks, verification progress: {:.3}%",
                 info.blocks,
                 info.headers,
                 info.verificationprogress * 100.0
@@ -487,7 +487,7 @@ impl Daemon {
         Ok(paths)
     }
 
-    /// flokicoind v28.0+ defaults to xor-ing all blk*.dat files with this key,
+    /// lokid v28.0+ defaults to xor-ing all blk*.dat files with this key,
     /// stored in the blocks dir.
     /// See: <https://github.com/flokicoin/flokicoin/pull/28052>
     pub fn read_blk_file_xor_key(&self) -> Result<Option<[u8; 8]>> {
@@ -546,7 +546,7 @@ impl Daemon {
         loop {
             match self.handle_request(method, &params) {
                 Err(e @ Error(ErrorKind::Connection(_), _)) => {
-                    warn!("reconnecting to Flokicoind: {}", e.display_chain());
+                    warn!("reconnecting to Lokid: {}", e.display_chain());
                     self.signal.wait(Duration::from_secs(3), false)?;
                     let mut conn = self.conn.lock().unwrap();
                     *conn = conn.reconnect()?;
@@ -605,7 +605,7 @@ impl Daemon {
         })
     }
 
-    // flokicoind JSONRPC API:
+    // lokid JSONRPC API:
 
     #[trace]
     pub fn getblockchaininfo(&self) -> Result<BlockchainInfo> {
@@ -713,12 +713,12 @@ impl Daemon {
                         // There is a small chance the node returns the header but didn't finish to index the block
                         log::warn!("getblocks failing with: {e:?} trying {attempts} more time")
                     } else {
-                        panic!("failed to get blocks from Flokicoind: {}", err_msg);
+                        panic!("failed to get blocks from Lokid: {}", err_msg);
                     }
                 }
             }
             if attempts == 0 {
-                panic!("failed to get blocks from Flokicoind")
+                panic!("failed to get blocks from Lokid")
             }
             std::thread::sleep(RETRY_WAIT_DURATION);
         };

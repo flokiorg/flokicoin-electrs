@@ -34,7 +34,7 @@ by roughly 50% at the cost of slower and more expensive lookups.
 
 With this option set, raw transactions and metadata associated with blocks will not be kept in rocksdb
 (the `T`, `X` and `M` indexes),
-but instead queried from Flokicoind on demand.
+but instead queried from Lokid on demand.
 
 ### Notable changes from Electrs:
 
@@ -49,7 +49,7 @@ but instead queried from Flokicoind on demand.
   - A map of blockhash to txids is kept in the database under the prefix `X`.
   - Block stats metadata (number of transactions, size and weight) is kept in the database under the prefix `M`.
 
-  With these new indexes, flokicoind is no longer queried to serve user requests and is only polled
+  With these new indexes, lokid is no longer queried to serve user requests and is only polled
   periodically for new blocks and for syncing the mempool.
 
 - Support for Liquid and other Elements-based networks, including CT, peg-in/out and multi-asset.

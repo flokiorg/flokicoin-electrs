@@ -83,7 +83,7 @@ fn bitcoind_fetcher(
     let sender = chan.sender();
     Ok(Fetcher::from(
         chan.into_receiver(),
-        spawn_thread("flokicoind_fetcher", move || {
+        spawn_thread("lokid_fetcher", move || {
             for entries in new_headers.chunks(100) {
                 let blockhashes: Vec<BlockHash> = entries.iter().map(|e| *e.hash()).collect();
                 let blocks = daemon
@@ -180,7 +180,7 @@ fn blkfiles_reader(blk_files: Vec<PathBuf>, xor_key: Option<[u8; 8]>) -> Fetcher
     )
 }
 
-/// By default, flokicoind v28.0+ applies an 8-byte "xor key" over each "blk*.dat"
+/// By default, lokid v28.0+ applies an 8-byte "xor key" over each "blk*.dat"
 /// file. We have xor again to undo this transformation.
 fn blkfile_apply_xor_key(xor_key: [u8; 8], blob: &mut [u8]) {
     for (i, blob_i) in blob.iter_mut().enumerate() {

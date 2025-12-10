@@ -31,7 +31,7 @@ impl Waiter {
         Waiter {
             receiver: notify(&[
                 SIGINT, SIGTERM,
-                SIGUSR1, // allow external triggering (e.g. via flokicoind `blocknotify`)
+                SIGUSR1, // allow external triggering (e.g. via lokid `blocknotify`)
             ]),
             zmq_receiver: block_hash_receive,
         }

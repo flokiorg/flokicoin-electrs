@@ -590,7 +590,7 @@ impl Mempool {
             .map_or_else(|| vec![], |entries| self._history(entries, limit))
     }
 
-    /// Sync our local view of the mempool with the flokicoind Daemon RPC. If the chain tip moves before
+    /// Sync our local view of the mempool with the lokid Daemon RPC. If the chain tip moves before
     /// the mempool is fetched in full, syncing is aborted and an Ok(false) is returned.
     #[trace]
     pub fn update(
@@ -609,7 +609,7 @@ impl Mempool {
         let mut fetched_txs = BTreeMap::<Txid, Transaction>::new();
         let mut indexed_txids = mempool.read().unwrap().txids_set();
         loop {
-            // Get flokicoind's current list of mempool txids
+            // Get lokid's current list of mempool txids
             let all_txids = daemon
                 .getmempooltxids()
                 .chain_err(|| "failed to update mempool from daemon")?;
@@ -623,7 +623,7 @@ impl Mempool {
             indexed_txids.retain(|txid| all_txids.contains(txid));
             fetched_txs.retain(|txid, _| all_txids.contains(txid));
 
-            // Fetch missing transactions from flokicoind
+            // Fetch missing transactions from lokid
             let new_txids = all_txids
                 .iter()
                 .filter(|&txid| !fetched_txs.contains_key(txid) && !indexed_txids.contains(txid))

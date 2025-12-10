@@ -138,13 +138,13 @@ impl Config {
             .arg(
                 Arg::with_name("daemon_dir")
                     .long("daemon-dir")
-                    .help("Data directory of Flokicoind (default: ~/.flokicoin/)")
+                    .help("Data directory of Lokid (default: ~/.flokicoin/)")
                     .takes_value(true),
             )
             .arg(
                 Arg::with_name("blocks_dir")
                     .long("blocks-dir")
-                    .help("Analogous to flokicoind's -blocksdir option, this specifies the directory containing the raw blocks files (blk*.dat) (default: ~/.flokicoin/blocks/)")
+                    .help("Analogous to lokid's -blocksdir option, this specifies the directory containing the raw blocks files (blk*.dat) (default: ~/.flokicoin/blocks/)")
                     .takes_value(true),
             )
             .arg(
@@ -337,7 +337,7 @@ impl Config {
              ).arg(
                 Arg::with_name("zmq_addr")
                     .long("zmq-addr")
-                    .help("Optional zmq socket address of the Flokicoind daemon")
+                    .help("Optional zmq socket address of the Lokid daemon")
                     .takes_value(true),
             );
 
@@ -486,7 +486,7 @@ impl Config {
         let daemon_rpc_addr: SocketAddr = str_to_socketaddr(
             m.value_of("daemon_rpc_addr")
                 .unwrap_or(&format!("127.0.0.1:{}", default_daemon_port)),
-            "Flokicoind RPC",
+            "Lokid RPC",
         );
         let electrum_rpc_addr: SocketAddr = str_to_socketaddr(
             m.value_of("electrum_rpc_addr")

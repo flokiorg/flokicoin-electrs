@@ -48,7 +48,7 @@
               ROCKSDB_LIB_DIR = "${pkgs.rocksdb}/lib";
 
               # for integration testing
-              BITCOIND_EXE = "${pkgs.flokicoind}/bin/flokicoind";
+              BITCOIND_EXE = "${pkgs.lokid}/bin/lokid";
               ELEMENTSD_EXE = "${pkgs.elementsd}/bin/elementsd";
               ELECTRUMD_EXE = "${pkgs.electrum}/bin/electrum";
             };

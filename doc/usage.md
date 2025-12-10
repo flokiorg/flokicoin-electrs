@@ -17,11 +17,11 @@ $ cargo build --release
 ```
 
 
-## Flokicoind configuration
+## Lokid configuration
 
 Allow Flokicoin daemon to sync before starting Electrum server:
 ```bash
-$ flokicoind -server=1 -txindex=0 -prune=0
+$ lokid -server=1 -txindex=0 -prune=0
 ```
 
 If you are using `-rpcuser=USER` and `-rpcpassword=PASSWORD` for authentication, please use `--cookie="USER:PASSWORD"` command-line flag.
@@ -35,7 +35,7 @@ $ cargo run --release -- -vvv --timestamp --db-dir ./db [--cookie="USER:PASSWORD
 2018-08-17T18:27:42 - INFO - BlockchainInfo { chain: "main", blocks: 537204, headers: 537204, bestblockhash: "0000000000000000002956768ca9421a8ddf4e53b1d81e429bd0125a383e3636", pruned: false, initialblockdownload: false }
 2018-08-17T18:27:42 - DEBUG - opening DB at "./db/mainnet"
 2018-08-17T18:27:42 - DEBUG - full compaction marker: None
-2018-08-17T18:27:42 - INFO - listing block files at "/home/user/.flokicoind/blocks/blk*.dat"
+2018-08-17T18:27:42 - INFO - listing block files at "/home/user/.lokid/blocks/blk*.dat"
 2018-08-17T18:27:42 - INFO - indexing 1348 blk*.dat files
 2018-08-17T18:27:42 - DEBUG - found 0 indexed blocks
 2018-08-17T18:27:55 - DEBUG - applying 537205 new headers from height 0
@@ -81,7 +81,7 @@ $ electrum --oneserver --server=127.0.0.1:50002:s
 ```bash
 $ docker build -t electrs-app .
 $ docker run --network host \
-             --volume /home/roman/.flokicoind:/home/user/.flokicoind:ro \
+             --volume /home/roman/.lokid:/home/user/.lokid:ro \
              --volume $PWD:/home/user \
              --rm -i -t electrs-app
 ```

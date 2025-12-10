@@ -259,7 +259,7 @@ impl HeaderList {
     /// Get the Median Time Past
     pub fn get_mtp(&self, height: usize) -> u32 {
         // Use the timestamp as the mtp of the genesis block.
-        // Matches flokicoind's behaviour: flokicoin-cli getblock `flokicoin-cli getblockhash 0` | jq '.time == .mediantime'
+        // Matches lokid's behaviour: lokid-cli getblock `lokid-cli getblockhash 0` | jq '.time == .mediantime'
         if height == 0 {
             self.headers.get(0).unwrap().header.time
         } else if height > self.len() - 1 {

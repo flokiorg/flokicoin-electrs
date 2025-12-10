@@ -6,12 +6,12 @@ shopt -s expand_aliases
 # A simple script for checking HTTP API stability by comparing the responses
 # between two running electrs instances connected to a regtest node backend.
 
-: ${NODE_DIR?missing NODE_DIR} # for flokicoind/elementds
+: ${NODE_DIR?missing NODE_DIR} # for lokid/elementds
 : ${ELECTRS1_URL?missing ELECTRS1_URL}
 : ${ELECTRS2_URL?missing ELECTRS2_URL}
 # Set ELEMENTS_CHAIN for Elements-based chains (e.g. to 'elementsregtest')
 
-alias cli="$([[ -z $ELEMENTS_CHAIN ]] && echo flokicoin-cli -regtest || echo elements-cli -chain=$ELEMENTS_CHAIN) -datadir=$NODE_DIR"
+alias cli="$([[ -z $ELEMENTS_CHAIN ]] && echo lokid-cli -regtest || echo elements-cli -chain=$ELEMENTS_CHAIN) -datadir=$NODE_DIR"
 
 check() {
     echo "Checking GET $1 ..."
