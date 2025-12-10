@@ -6,4 +6,5 @@ target
 *.pyc
 result
 .direnv
+.com
 commits.sh
