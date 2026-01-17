@@ -207,25 +207,34 @@ fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBloc
     )
 }
 
+struct StdCursorCompat<T>(std::io::Cursor<T>);
+
+impl<T: AsRef<[u8]>> bitcoin::io::Read for StdCursorCompat<T> {
+    fn read(&mut self, buf: &mut [u8]) -> bitcoin::io::Result<usize> {
+        use std::io::Read;
+        self.0.read(buf).map_err(bitcoin::io::Error::from)
+    }
+}
+
 #[trace]
 fn parse_blocks(blob: Vec<u8>, magic: u32) -> Result<Vec<SizedBlock>> {
-    let mut cursor = Cursor::new(&blob);
+    let mut cursor = StdCursorCompat(Cursor::new(&blob));
     let mut slices = vec![];
     let max_pos = blob.len() as u64;
 
-    while cursor.position() < max_pos {
-        let offset = cursor.position();
+    while cursor.0.position() < max_pos {
+        let offset = cursor.0.position();
         match u32::consensus_decode(&mut cursor) {
             Ok(value) => {
                 if magic != value {
-                    cursor.set_position(offset + 1);
+                    cursor.0.set_position(offset + 1);
                     continue;
                 }
             }
             Err(_) => break, // EOF
         };
         let block_size = u32::consensus_decode(&mut cursor).chain_err(|| "no block size")?;
-        let start = cursor.position();
+        let start = cursor.0.position();
         let end = start + block_size as u64;
 
         // If Core's WriteBlockToDisk ftell fails, only the magic bytes and size will be written
@@ -235,14 +244,14 @@ fn parse_blocks(blob: Vec<u8>, magic: u32) -> Result<Vec<SizedBlock>> {
         match u32::consensus_decode(&mut cursor) {
             Ok(value) => {
                 if magic == value {
-                    cursor.set_position(start);
+                    cursor.0.set_position(start);
                     continue;
                 }
             }
             Err(_) => break, // EOF
         }
         slices.push((&blob[start as usize..end as usize], block_size));
-        cursor.set_position(end as u64);
+        cursor.0.set_position(end as u64);
     }
 
     let pool = rayon::ThreadPoolBuilder::new()
