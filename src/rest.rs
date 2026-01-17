@@ -831,22 +831,26 @@ fn handle_request(
         ) => {
             let script_hash = to_scripthash(script_type, script_str, config.network_type)?;
 
+            let after_txid = query_params.get("after_txid").and_then(|t| Txid::from_str(t).ok());
+
             let mut txs = vec![];
 
-            txs.extend(
-                query
-                    .mempool()
-                    .history(&script_hash[..], config.rest_default_max_mempool_txs)
-                    .into_iter()
-                    .map(|tx| (tx, None)),
-            );
+            if after_txid.is_none() {
+                txs.extend(
+                    query
+                        .mempool()
+                        .history(&script_hash[..], config.rest_default_max_mempool_txs)
+                        .into_iter()
+                        .map(|tx| (tx, None)),
+                );
+            }
 
             txs.extend(
                 query
                     .chain()
                     .history(
                         &script_hash[..],
-                        None,
+                        after_txid.as_ref(),
                         config.rest_default_chain_txs_per_page,
                     )
                     .into_iter()
