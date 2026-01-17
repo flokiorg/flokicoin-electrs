@@ -2,7 +2,7 @@ workspace = { members = ["electrs_macros"] }
 
 [package]
 name = "flokicoin-electrs"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Roman Zeyde <me@romanzey.de>"]
 description = "An efficient re-implementation of Electrum Server in Rust"
 license = "MIT"
@@ -36,7 +36,7 @@ arrayref = "0.3.6"
 base64 = "0.22"
 bincode = "1.3.1"
 bounded-vec-deque = "0.1.1"
-bitcoin = { path="../rust-flokicoin/bitcoin", version = "0.32.5", features = ["serde", "rand-std"] }
+bitcoin = { package = "flokicoin", path="../rust-flokicoin/flokicoin", version = "0.32.5", features = ["serde", "rand-std"] }
 clap = "2.33.3"
 crossbeam-channel = "0.5.0"
 dirs = "5.0.1"
@@ -99,6 +99,12 @@ required-features = ["bench"]
 lto = true
 panic = 'abort'
 codegen-units = 1
+
+[patch.crates-io]
+flokicoin_hashes = { path = "../rust-flokicoin/hashes" }
+flokicoin-internals = { path = "../rust-flokicoin/internals" }
+flokicoin-io = { path = "../rust-flokicoin/io" }
+flokicoin-units = { path = "../rust-flokicoin/units" }
 
 [patch.crates-io.electrum-client]
 git = "https://github.com/Blockstream/rust-electrum-client"
